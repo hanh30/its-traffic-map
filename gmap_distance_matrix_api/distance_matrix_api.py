@@ -42,8 +42,9 @@ def request_api(df):
         dt = datetime.now()
 
         resp = session.get(url=df['link'][i])
-        data = resp.json() # Check the JSON Response Content documentation below
+        data = resp.json()
 
+        # Preprocess the JSON response
         data['origin_addresses'] = data['origin_addresses'][0]
         data['destination_addresses'] = data['destination_addresses'][0]
         data['distance'] = data['rows'][0]['elements'][0]['distance']['value']
@@ -51,13 +52,18 @@ def request_api(df):
         data['duration_in_traffic'] = data['rows'][0]['elements'][0]['duration_in_traffic']['value']
         data['datetime'] = dt
 
+        # Extract relevant information from the JSON response
         data = {key: value for key, value in data.items() if key not in ['rows', 'status']}
         
         output_list.append(data)
 
+    # Convert the list of API results into a DataFrame
     df_output = pd.DataFrame(output_list)
+
+    # Concatenate original DataFrame with the API results
     df_api = pd.concat([df, df_output], axis=1)
 
+    # Calculate speed (in km/h) using distance (in meter) and duration (in second)
     df_api['speed'] = df_api['distance']/1000 / (df_api['duration']/3600)
     df_api['speed_in_traffic'] = df_api['distance']/1000 / (df_api['duration_in_traffic']/3600)
 

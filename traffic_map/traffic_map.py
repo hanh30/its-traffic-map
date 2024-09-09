@@ -8,6 +8,7 @@ import pyproj
 import itertools
 
 
+# Define geographical boundaries for Hanoi
 NORTH = 21.09
 SOUTH = 20.94
 EAST = 105.93
@@ -17,40 +18,57 @@ current_path = os.path.dirname(os.path.abspath(__file__))
 file_path = f'{current_path}/../db/traffic.xlsx'
 
 
-# sua < TIME, >= TIMESTART
+# edit < TIME, >= TIMESTART
 def read_data_vehicle(FILE_PATH_VEHICLE, DATE, TIME, duration=5):
+    '''
+    Read and process vehicle data (including GPS info).
+
+    Args:
+        FILE_PATH_VEHICLE (str): Path to the vehicle data CSV file.
+        DATE (str): The date for filtering the data (in 'YYYY-MM-DD' format).
+        TIME (str): The end time for the time window (in 'HH:MM:SS' format).
+        duration (int): The time window duration in minutes before the specified TIME (default is 5 minutes).
+    
+    Returns:
+        pd.DataFrame: Preprocessed DataFrame with vehicle data.
+    '''
+    
+    # Calculate the start time based on the duration (minutes) before the given TIME.
     TIME_START = (datetime.strptime(TIME, '%H:%M:%S') - timedelta(minutes=duration)).strftime('%H:%M:%S')
 
     df = pd.read_csv(FILE_PATH_VEHICLE)
-    print(df.shape)
+    # print(df.shape)
 
     df['datetime'] = pd.to_datetime(df['datetime'])
 
+    # Filter data based on the specified date and time range
     df = df[(df['datetime'].dt.date.astype(str) == DATE) & (df['time']<=TIME) & (df['time']>TIME_START)]
-    print(df.shape)
+    # print(df.shape)
 
     df = df.sort_values(by=['vehicle', 'datetime', 'arrival_time']).reset_index(drop=True)
-
     df.drop_duplicates(subset=['vehicle', 'datetime'], inplace=True)
-    print(df.shape)
+    # print(df.shape)
 
     df.rename(columns={'x':'y', 'y':'x'}, inplace=True)
 
+    # Filter data based on geographic boundaries
     df = df[(df['x']<=NORTH) & (df['x']>=SOUTH) & (df['y']>=WEST) & (df['y']<=EAST)].reset_index(drop=True)
-    
+    # print(df.shape)
+
+    # Ensure non-negative speeds by setting negative speed values to 0
     df['speed'] = np.where(df['speed']<0, 0, df['speed'])
-    print(df.shape)
     
     return df
 
 
-# Vectorized function to calculate geodesic distance
+# Vectorized function to calculate geodesic distance between two coordinates
 def _vectorized_geodesic(lat1, lon1, lat2, lon2):
     distances = np.vectorize(lambda x1, y1, x2, y2: geodesic((x1, y1), (x2, y2)).meters if not any(pd.isnull([x1, y1, x2, y2])) else np.nan)
     return distances(lat1, lon1, lat2, lon2)
 
 
 def preprocessing(df):
+    # Create lagged and lead columns for datetime, vehicle coordinates and speed
     df['datetime_last'] = df.groupby('vehicle')['datetime'].shift(1)
     df['x_last'] = df.groupby('vehicle')['x'].shift(1)
     df['y_last'] = df.groupby('vehicle')['y'].shift(1)
@@ -66,6 +84,7 @@ def preprocessing(df):
     df['distance_last'] = _vectorized_geodesic(df['x'], df['y'], df['x_last'], df['y_last'])
     df['distance_next'] = _vectorized_geodesic(df['x'], df['y'], df['x_next'], df['y_next'])
 
+    # Calculate average speeds (in km/h) using the distances and durations between consecutive points
     df['speed_avg_last'] = (df['distance_last']/1000)/(df['duration_last']/3600)
     df['speed_avg_next'] = (df['distance_next']/1000)/(df['duration_next']/3600)
 
@@ -78,6 +97,10 @@ def preprocessing(df):
 
     df['accelerate'] = (df['speed_avg_next'] - df['speed_avg_last'])/((df['duration_last'] + df['duration_next'])/2)
 
+    # Calculate speed_avg based on speed, speed_last, speed_avg_last, speed_next, speed_avg_next
+    # If speed = speed_last = speed_next = 0 then speed_avg = 0
+    # else calculate speed_avg as average of above values of speed,
+    # on condition that distance last/next < distance_threshold (in meter)
     distance_threshold = 200
     df['speed_avg'] = np.where(
         (df['speed']==0) & (df['speed_last']==0) & (df['speed_next']==0),
@@ -97,13 +120,13 @@ def preprocessing(df):
         )
     )
 
-    # Compute heading of vehicles
+    # Compute heading of vehicles (angle between vehicle's direction and the north)
     geod = pyproj.Geod(ellps='WGS84')
     heading, _, _ = geod.inv(df['y'], df['x'], df['y_next'], df['x_next'])
 
     df['heading'] = np.where(
         (df['x']==df['x_next']) & (df['y']==df['y_next']),
-        0, # set heading = 0 if latitude = longitude, in case the above calculation returns 360
+        0, # set heading = 0 if current coordinate = next coordinate, in case the above calculation returns 360
         heading
     )
 
@@ -114,14 +137,19 @@ def preprocessing(df):
         df['heading'] + 360
     )
 
+    # Drop unnecessary columns
     df.drop(columns=['hour', 'min', 'sec', 'datetime_last', 'x_last', 'y_last', 'datetime_next', 'x_next', 'y_next'], inplace=True)
 
+    # Filter out rows where speed_avg = 0 to remove stopped vehicles
     df = df[df['speed_avg']!=0]
 
     return df
 
 
 def insert_heading_col(df):
+    '''
+    Calculate the heading for streets based on consecutive points, grouping by street and direction.
+    '''
     df = df.sort_values(by=['street', 'direction', 'order']).reset_index(drop=True)
 
     df['x_next'] = df.groupby(['street', 'direction'])['x'].shift(-1)
@@ -145,7 +173,16 @@ def insert_heading_col(df):
     )
 
     df.drop(columns=['x_next', 'y_next'], inplace=True)
-    df['heading'].fillna(method='ffill', inplace=True)
+
+    # Forward fill missing heading values (the last point on the street)
+    df['heading'] = df['heading'].ffill()
+
+    # Set heading to NaN for streets without direction
+    df['heading'] = np.where(
+        df['direction'] == 0,
+        np.nan,
+        df['heading']
+    )
 
     return df
 
@@ -170,7 +207,21 @@ def insert_heading_col(df):
 #     return closest_points
 
 
-def find_closest_point(df_vehicle, df_street, angle_threshold=45, chunk_size=5000):
+def find_closest_point(df_vehicle, df_street, angle_threshold=45, distance_closest_threshold = 10, chunk_size=5000):
+    '''
+    Finds the closest point on the street for each vehicle data point based on spatial proximity and heading direction.
+    
+    Args:
+        df_vehicle (pd.DataFrame): Vehicle data with 'x' (latitude), 'y' (longitude), and 'heading' columns.
+        df_street (pd.DataFrame): Street data with 'x' (latitude), 'y' (longitude), and 'heading' columns.
+        angle_threshold (float): Maximum angle difference (in degrees) to consider for matching the vehicle heading to street heading.
+        distance_closest_threshold (float): Maximum distance (in meters) to consider a point as the closest.
+        chunk_size (int): Number of vehicle records to process in each chunk to manage memory usage.
+
+    Returns:
+        pd.DataFrame: Updated vehicle DataFrame with the closest point's coordinates and distance.
+    '''
+    
     closest_points = []
 
     for start_idx in range(0, len(df_vehicle), chunk_size):
@@ -186,6 +237,9 @@ def find_closest_point(df_vehicle, df_street, angle_threshold=45, chunk_size=500
 
         # Compute the angle differences
         angle_diff = np.abs(vehicle_headings[:, None] - street_headings[None, :])
+
+        # For streets without direction, fill the angle differences = 0
+        angle_diff[np.isnan(angle_diff)] = 0
         
         # Adjust angles larger than 180 degrees
         angle_diff = np.minimum(angle_diff, 360 - angle_diff)
@@ -211,24 +265,44 @@ def find_closest_point(df_vehicle, df_street, angle_threshold=45, chunk_size=500
     
     closest_points = np.vstack(closest_points)
 
+    # Add columns for closest point coordinates and distance to df_vehicle
     df_vehicle['x_closest'] = [c[0] for c in closest_points]
     df_vehicle['y_closest'] = [c[1] for c in closest_points]
     df_vehicle['distance_closest'] = _vectorized_geodesic(df_vehicle['x'], df_vehicle['y'], df_vehicle['x_closest'], df_vehicle['y_closest'])
+
+    # Filter to keep rows where the closest distance is within the threshold
+    df_vehicle = df_vehicle[df_vehicle['distance_closest']<=distance_closest_threshold]
 
     return df_vehicle
 
 
 def get_map_color(df_vehicle, df_street, window_size=10):
-    df_street_merged = pd.merge(
-        df_street, df_vehicle[['x_closest', 'y_closest', 'speed_avg']].rename(columns={'x_closest':'x', 'y_closest':'y'}), 
+    '''
+    Determines the color for each street point based on average speeds and predefined color mappings.
+    
+    Args:
+        df_vehicle (pd.DataFrame): Vehicle data
+        df_street (pd.DataFrame): Street data
+        window_size (int): Size of the rolling window to compute average speed for each street segment.
+
+    Returns:
+        pd.DataFrame: Street DataFrame with added color information based on speed and predefined color mappings.
+    '''
+
+    # Merge vehicle data with street data based on closest points
+    df_street_merged = df_street.merge(
+        df_vehicle[['x_closest', 'y_closest', 'speed_avg']].rename(columns={'x_closest':'x', 'y_closest':'y'}), 
         on=['x', 'y'], how='left'
     )
 
-    df_street_group = df_street_merged.groupby(df_street.columns.tolist())['speed_avg'].apply(list).reset_index()
+    # Group by street and direction and compute lists of average speeds
+    df_street_group = df_street_merged.groupby(['street', 'direction', 'order'])['speed_avg'].apply(list).reset_index()
+    df_street_group = df_street.merge(df_street_group, how='left', on=['street', 'direction', 'order'])
     df_street_group = df_street_group.sort_values(by=['street', 'direction', 'order']).reset_index(drop=True)
 
-    print(f'df_street_group = {df_street_group.shape}')
+    # print(f'df_street_group = {df_street_group.shape}')
 
+    # Create rolling windows for order and speed_avg
     df_rolling = pd.DataFrame({
         'street': df_street_group['street'],
         'type': df_street_group['type'],
@@ -236,54 +310,55 @@ def get_map_color(df_vehicle, df_street, window_size=10):
         'order': [window.to_list() for window in df_street_group.groupby(['street', 'direction'])['order'].rolling(window_size)],
         'speed_avg': [window.to_list() for window in df_street_group.groupby(['street', 'direction'])['speed_avg'].rolling(window_size)]
     })
-    print(f'df_rolling = {df_rolling.shape}')
+    # print(f'df_rolling = {df_rolling.shape}')
 
+    # Filter out rows where rolling window size does not match the specified window_size
     df_rolling = df_rolling[df_rolling['order'].apply(lambda x: len(x)) == window_size].reset_index(drop=True)
-    print(f'df_rolling = {df_rolling.shape}')
+    # print(f'df_rolling = {df_rolling.shape}')
 
+    # Flatten the list of speed_avg
     df_rolling['speed_avg'] = df_rolling['speed_avg'].apply(lambda x: list(itertools.chain.from_iterable(x)))
+    
+    # Remove NaN item from each list of speed_avg
     df_rolling['speed_avg'] = df_rolling['speed_avg'].apply(lambda x: [i for i in x if not pd.isna(i)])
+    
+    # Compute median speed for each street point
     df_rolling['speed_median'] = df_rolling['speed_avg'].apply(lambda x: np.median(x) if x else np.nan)
 
+    # Load color mapping data
     df_color_mapping = pd.read_excel(file_path, sheet_name='color')
 
-    df_rolling['color'] = np.where(
-        df_rolling['speed_median'] >= 15,
-        'green',
-        np.where(
-            df_rolling['speed_median'] >= 10,
-            'yellow',
-            np.where(
-                df_rolling['speed_median'] >= 0,
-                'red',
-                'blue'
-            )
-        )
-    )
+    # Merge speed data with color mapping and filter based on speed median
+    df_rolling_nonnull = df_rolling[df_rolling['speed_median'].notnull()]
+    df_rolling_nonnull = df_rolling_nonnull.merge(df_color_mapping, how='left', on='type')
+    df_rolling_nonnull = df_rolling_nonnull[
+        (df_rolling_nonnull['speed_median']>=df_rolling_nonnull['speed_in_traffic_min']) & 
+        (df_rolling_nonnull['speed_median']<df_rolling_nonnull['speed_in_traffic_max'])
+    ]
+    df_rolling_nonnull.drop(columns=['speed_in_traffic_min', 'speed_in_traffic_max'], inplace=True)
 
-    df_explode = df_rolling[['street', 'type', 'direction', 'order', 'color']].explode('order').reset_index(drop=True)
+    # df_rolling_null = df_rolling[df_rolling['speed_median'].isnull()]
+    # df_rolling_null['color'] = np.nan
 
-    priority_order = ['green', 'yellow', 'red', 'darkred']
+    # df_rolling = pd.concat([df_rolling_nonnull, df_rolling_null]).reset_index(drop=True)
 
-    # Group by the 'group' column and get the mode, respecting priority order
+    # Explode the 'order' column to convert each element in order list to one row
+    df_explode = df_rolling_nonnull[['street', 'direction', 'order', 'color']].explode('order').reset_index(drop=True)
+
+    # Function to get the most presented color (with priority) from a series of color
     def get_mode_with_priority(series):
-        # Get the mode(s)
-        modes = series.mode()
-        
-        if len(modes) > 1:
-            # If there is a tie, choose based on priority
-            for value in priority_order:
-                if value in modes.values:
-                    return value
-        else:
-            # If no tie, return the single mode
-            return modes[0]
+        priority_order = ['green', 'yellow', 'red', 'darkred']
+        modes = series.mode().tolist()
+        modes_priority = [x for x in priority_order if x in modes]
+        return modes_priority[0]
 
-    # Apply the function to get the mode with priority for each group
+    # Apply the function to get the most presented color with priority for each street point
     df_mode = df_explode.groupby(['street', 'direction', 'order'])['color'].apply(get_mode_with_priority).reset_index()
-    print(f'df_mode = {df_mode.shape}')
+    # print(f'df_mode = {df_mode.shape}')
 
+    # Merge the most presented colors back into the street data
     df_street_color = df_street_group.merge(df_mode, how='left', on=['street', 'direction', 'order'])
-    print(f'df_street_color = {df_street_color.shape}')
+    df_street_color['color'] = df_street_color['color'].fillna('blue')
+    # print(f'df_street_color = {df_street_color.shape}')
     
-    return df_street_color, df_rolling
+    return df_street_color

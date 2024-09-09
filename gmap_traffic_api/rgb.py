@@ -1,8 +1,10 @@
+import os
 import matplotlib.pyplot as plt
 from PIL import Image
 
 # Load the image
-image_path = './gmap_traffic_api/screenshot.png'
+current_path = os.path.dirname(os.path.abspath(__file__))
+image_path = f'{current_path}/screenshot.png'
 img = Image.open(image_path)
 
 # Convert the image to RGB mode if it's not already

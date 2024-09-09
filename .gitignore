@@ -1,3 +1,5 @@
 venv-its/
+api_result/
 gps/
-api_result/traffic_api/
+traffic_map/traffic_map_draft.ipynb
+
