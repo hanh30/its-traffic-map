@@ -1,5 +1,6 @@
 __pycache__/
 venv-its/
-api_result/
+api_result/*
+!api_result/data.txt
 gps/
 traffic_map/*_draft.ipynb
