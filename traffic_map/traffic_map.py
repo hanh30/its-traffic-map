@@ -18,7 +18,7 @@ current_path = os.path.dirname(os.path.abspath(__file__))
 file_path = f'{current_path}/../db/traffic.xlsx'
 
 
-# edit < TIME, >= TIMESTART
+
 def read_data_vehicle(FILE_PATH_VEHICLE, DATE, TIME, duration=5):
     '''
     Read and process vehicle data (including GPS info).
@@ -42,14 +42,14 @@ def read_data_vehicle(FILE_PATH_VEHICLE, DATE, TIME, duration=5):
     df['datetime'] = pd.to_datetime(df['datetime'])
 
     # Filter data based on the specified date and time range
-    df = df[(df['datetime'].dt.date.astype(str) == DATE) & (df['time']<=TIME) & (df['time']>TIME_START)]
+    df = df[(df['datetime'].dt.date.astype(str) == DATE) & (df['time']<TIME) & (df['time']>=TIME_START)]
     # print(df.shape)
 
     df = df.sort_values(by=['vehicle', 'datetime', 'arrival_time']).reset_index(drop=True)
     df.drop_duplicates(subset=['vehicle', 'datetime'], inplace=True)
     # print(df.shape)
 
-    df.rename(columns={'x':'y', 'y':'x'}, inplace=True)
+    # df.rename(columns={'x':'y', 'y':'x'}, inplace=True)
 
     # Filter data based on geographic boundaries
     df = df[(df['x']<=NORTH) & (df['x']>=SOUTH) & (df['y']>=WEST) & (df['y']<=EAST)].reset_index(drop=True)
@@ -276,7 +276,7 @@ def find_closest_point(df_vehicle, df_street, angle_threshold=45, distance_close
     return df_vehicle
 
 
-def get_map_color(df_vehicle, df_street, window_size=10):
+def get_map_color(df_vehicle, df_street, window_size=10, weight=0.5):
     '''
     Determines the color for each street point based on average speeds and predefined color mappings.
     
@@ -327,6 +327,8 @@ def get_map_color(df_vehicle, df_street, window_size=10):
 
     # Load color mapping data
     df_color_mapping = pd.read_excel(file_path, sheet_name='color')
+    df_color_mapping['speed_in_traffic_min'] = weight * df_color_mapping['speed_in_traffic_min']
+    df_color_mapping['speed_in_traffic_max'] = weight * df_color_mapping['speed_in_traffic_max']
 
     # Merge speed data with color mapping and filter based on speed median
     df_rolling_nonnull = df_rolling[df_rolling['speed_median'].notnull()]
@@ -362,3 +364,54 @@ def get_map_color(df_vehicle, df_street, window_size=10):
     # print(f'df_street_color = {df_street_color.shape}')
     
     return df_street_color
+
+
+if __name__ == '__main__':
+    # Set variables
+
+    # DATE = datetime.now().strftime('%Y-%m-%d')
+    # TIME = datetime.now().strftime('%H:%M:00')
+
+    DATE = '2024-09-10'
+    TIME = '17:03:00'
+
+    # print(f'DATE = {DATE}')
+    # print(f'TIME = {TIME}')
+
+    current_path = os.path.dirname(os.path.abspath(__file__))
+    file_path = f'{current_path}/../db/traffic.xlsx'
+    FILE_PATH_VEHICLE = f'{current_path}/../db/test_data2.csv'
+    FILE_PATH_STREET = f'{current_path}/../db/d_street_old.csv'
+
+    weight=0.5
+
+    # Load vehicle data
+    df_vehicle = read_data_vehicle(FILE_PATH_VEHICLE, DATE, TIME, duration=5)
+    df_vehicle = preprocessing(df_vehicle)
+    # print(df_vehicle.shape)
+
+    # Load street data
+    df_street = pd.read_csv(FILE_PATH_STREET)
+    # df_street.shape
+
+    #######################################
+    df_street_type = pd.read_excel(file_path, sheet_name='street')
+    df_street = df_street.merge(df_street_type, how='left', on='street')
+    df_street = df_street[df_street['order'].notnull() & (df_street['order'] != 'x')].reset_index(drop=True)
+    df_street['order'] = df_street['order'].astype(int)
+    # df_street.shape
+    #######################################
+
+    # Combine vehicle data and street data, get traffic color
+    df_street = insert_heading_col(df_street)
+    df_vehicle = find_closest_point(df_vehicle, df_street, angle_threshold=45, chunk_size=5000)
+    df_street_color = get_map_color(df_vehicle, df_street, window_size=10, weight=weight)
+
+    # print(f'df_street = {df_street.shape}')
+    # print(f'df_vehicle = {df_vehicle.shape}')
+    # print(f'df_street_color = {df_street_color.shape}')
+
+    # Export result
+    dt = datetime.now().strftime('%Y%m%d%H%M%S')
+    output_path = f'{current_path}/../db/output_{dt}.csv'
+    df_street_color.to_csv(output_path, index=False)

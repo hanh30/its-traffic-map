@@ -2,5 +2,4 @@ __pycache__/
 venv-its/
 api_result/
 gps/
-traffic_map/traffic_map_draft.ipynb
-
+traffic_map/*_draft.ipynb
