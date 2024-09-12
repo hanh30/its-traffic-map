@@ -1,0 +1,3 @@
+[submodule "traffic-status-api"]
+	path = traffic-status-api
+	url = https://github.com/tungnthust/traffic-status-api.git
