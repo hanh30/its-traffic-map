@@ -31,11 +31,65 @@ def get_df_speed(path):
     return df_speed
 
 
+def generate_center_list(nw, se, zoom=18):
+    '''
+    Generate a grid of points (with latitude and longitude) within
+    a given bounding box (northwest and southeast corners)
+    based on the specified zoom level.
+    Results of this function are used as center points to get traffic color from Traffic Layer API.
+
+    Parameters:
+    nw (tuple): Coordinates of the northwest corner (latitude, longitude).
+    se (tuple): Coordinates of the southeast corner (latitude, longitude).
+    zoom (int): Zoom level to determine the grid spacing (default is 18).
+
+    Returns:
+    pd.DataFrame: A DataFrame containing the grid of center points 
+    with 'lat' (latitude) and 'lng' (longitude) columns.
+    '''
+
+    # Read the 'zoom' sheet from the Excel file to get latitude and longitude delta values for the specified zoom level
+    current_path = os.path.dirname(os.path.abspath(__file__))
+    file_path = f'{current_path}/../db/traffic.xlsx'
+    df_zoom = pd.read_excel(file_path, sheet_name='zoom')
+
+    # delta_lat: distance from center to horizontal edge
+    # delta_lng: distance from center to vertical edge
+    delta_lat = df_zoom[df_zoom['zoom']==zoom]['delta_lat'].values[0]
+    delta_lng = df_zoom[df_zoom['zoom']==zoom]['delta_lng'].values[0]
+
+    # Generate the centers' latitude list from north to south
+    x_list = np.arange(nw[0], se[0], -delta_lat)
+    x_list = x_list[[i for i in range(len(x_list)-1) if i%2==1]]
+
+    if x_list[-1] - delta_lat > se[0]:
+        x_list = np.append(x_list, x_list[-1] - 2*delta_lat)
+
+    # Generate the centers' longitude list from west to east
+    y_list = np.arange(nw[1], se[1], delta_lng)
+    y_list = y_list[[i for i in range(len(y_list)-1) if i%2==1]]
+
+    if y_list[-1] + delta_lng < se[1]:
+        y_list = np.append(y_list, y_list[-1] + 2*delta_lng)
+
+    # print(len(x_list))
+    # print(len(y_list))
+
+    # Generate all combinations (cross join) of latitude and longitude points
+    df_grid_x = pd.DataFrame({'lat': x_list})
+    df_grid_y = pd.DataFrame({'lng': y_list})
+    df_grid = pd.merge(df_grid_x, df_grid_y, how='cross')
+    # df_grid.shape
+
+    return df_grid
+
+
 def get_df_coord(path):
     '''
-    Read and process json files from Traffic Layer API,
+    Read and process json files from Traffic Layer API result,
     containing center, North East (NE) and South West (SW) coordinates.
     '''
+
     coord_list = []
     for f in glob.glob(f'{path}/*.json'):
         with open(f, 'r') as json_file:
@@ -161,6 +215,20 @@ def get_df_coord(path):
 #     return most_matching_color
 
 def find_coord_in_grid(coord, df_coord):
+    '''
+    Find the closest center point in a grid (df_coord) to a given coordinate (coord).
+
+    Parameters:
+    coord (tuple): The target coordinate as a tuple (latitude, longitude).
+    df_coord (pd.DataFrame): A DataFrame containing grid cells, with north-east and 
+                             south-west coordinates (columns 'ne_lat', 'ne_lng', 'sw_lat', 'sw_lng'),
+                             and the center point columns 'lat' and 'lng'.
+
+    Returns:
+    pd.Series: The row corresponding to the closest center point to the given coordinate.
+    '''
+
+    # Filter to find the cells that contain the target coordinate
     df_coord_filter = df_coord[
         (coord[0] <= df_coord['ne_lat']) &
         (coord[0] >= df_coord['sw_lat']) &
@@ -168,14 +236,31 @@ def find_coord_in_grid(coord, df_coord):
         (coord[1] >= df_coord['sw_lng'])
     ]
 
+    # Calculate the distance between the target coordinate and the center points of each cell
     df_coord_filter['distance'] = np.sqrt((df_coord_filter['lat'] - coord[0]) ** 2 + (df_coord_filter['lng'] - coord[1]) ** 2)
     
+    # Find the row with the minimum distance
     nearest_row = df_coord_filter.loc[df_coord_filter['distance'].idxmin()]
 
     return nearest_row
 
 
 def get_traffic_color(coord, df_coord, traffic_api_result_path, edge=20, plot=False):
+    '''
+    Extracts the dominant traffic color from a cropped square of an image based on geographical coordinates.
+    
+    Args:
+        coord (tuple): The geographical coordinates (latitude, longitude) of the point of interest.
+        df_coord (DataFrame): DataFrame containing the north-east (NE), south-west (SW), and center coordinates of the images (result of Traffic Layer API).
+        traffic_api_result_path (str): Path to the directory containing traffic images fetched from the API.
+        edge (int, optional): The edge length of the square region to crop from the image, in pixels. Default is 20.
+        plot (bool, optional): Whether to display the cropped image and the marked region for visualization.
+
+    Returns:
+        most_matching_color (str): The traffic color (e.g., 'green', 'yellow', 'red', 'darkred')
+        that matches the most pixels in the cropped area.
+    '''
+    
     nearest_row = find_coord_in_grid(coord, df_coord)
     timestamp = nearest_row['timestamp']
 
@@ -261,34 +346,23 @@ def get_traffic_color(coord, df_coord, traffic_api_result_path, edge=20, plot=Fa
     return most_matching_color
 
 
-def get_df_color(df_coord, path):
+def get_df_color(df, df_coord, traffic_api_result_path):
     '''
-    Processes all traffic image results from Traffic Layer API,
-    identifies the dominant traffic color for each, 
-    and merges this information with the df_coord.
+    Get the traffic color for multiple points.
+
+    Args:
+        df (DataFrame): The input DataFrame containing coordinates of points of interest ('lat', 'lng' columns).
+        df_coord (DataFrame): DataFrame containing the north-east (NE), south-west (SW), and center coordinates of the images (result of Traffic Layer API).
+        traffic_api_result_path (str): Path to the directory containing traffic images fetched from the API.
+        
+    Returns:
+        DataFrame: The input DataFrame with an additional 'color' column indicating the dominant traffic color for each point, 
+                   and a 'datetime' column converting the 'timestamp' to a timezone-adjusted datetime format.
     '''
-    # timestamp_list = []
-    # color_list = []
+    df['color'] = df.apply(lambda row: get_traffic_color((row['lat'], row['lng']), df_coord, traffic_api_result_path, edge=20, plot=False), axis=1)
+    df['datetime'] = pd.to_datetime(df['timestamp'].astype('int'), unit='s') + pd.Timedelta(hours=7)
 
-    # for f in glob.glob(f'{path}/*.png'):
-    #     timestamp_list.append(f.split('\\')[-1][:10])
-    #     most_matching_color = get_traffic_color(f, df_coord, edge=20, plot=False)
-    #     color_list.append(most_matching_color)
-
-    # df_traffic_color = pd.DataFrame({
-    #     'timestamp': timestamp_list,
-    #     'color': color_list
-    # })
-
-    # df_color = df_coord.merge(df_traffic_color, how='left', on='timestamp')
-
-    df_color = df_coord.copy()
-
-    df_color['color'] = df_color.apply(lambda row: get_traffic_color((row['lat'], row['lng']), df_coord, path, edge=20, plot=False), axis=1)
-
-    df_color['datetime'] = pd.to_datetime(df_color['timestamp'].astype('int'), unit='s') + pd.Timedelta(hours=7)
-
-    return df_color
+    return df
 
 
 def get_df_traffic(df_speed, df_color):
@@ -311,44 +385,30 @@ def get_df_traffic(df_speed, df_color):
     return df_traffic
 
 
-def generate_center_list(nw, se, zoom=18):
-    current_path = os.path.dirname(os.path.abspath(__file__))
-    file_path = f'{current_path}/../db/traffic.xlsx'
-
-    df_zoom = pd.read_excel(file_path, sheet_name='zoom')
-
-    delta_lat = df_zoom[df_zoom['zoom']==zoom]['delta_lat'].values[0]
-    delta_lng = df_zoom[df_zoom['zoom']==zoom]['delta_lng'].values[0]
-
-    x_list = np.arange(nw[0], se[0], -delta_lat)
-    x_list = x_list[[i for i in range(len(x_list)-1) if i%2==1]]
-
-    if x_list[-1] - delta_lat > se[0]:
-        x_list = np.append(x_list, x_list[-1] - 2*delta_lat)
-
-
-    y_list = np.arange(nw[1], se[1], delta_lng)
-    y_list = y_list[[i for i in range(len(y_list)-1) if i%2==1]]
-
-    if y_list[-1] + delta_lng < se[1]:
-        y_list = np.append(y_list, y_list[-1] + 2*delta_lng)
-
-
-    # print(len(x_list))
-    # print(len(y_list))
-
-    df_grid_x = pd.DataFrame({'lat': x_list})
-    df_grid_y = pd.DataFrame({'lng': y_list})
-    df_grid = pd.merge(df_grid_x, df_grid_y, how='cross')
-    # df_grid.shape
-
-    return df_grid
-
-
 def traffic_map_eval(output_path, nw, se, df_coord, traffic_api_result_path, num_point_sample=10, random_state=42):
+    '''
+    Evaluates the accuracy of predicted traffic colors by comparing them to actual traffic colors 
+    extracted from traffic images within a specified bounding box.
+
+    Args:
+        output_path (str): The file path to the CSV containing the traffic prediction results.
+        nw (tuple): Coordinates of the northwest corner (latitude, longitude) of the bounding box.
+        se (tuple): Coordinates of the southeast corner (latitude, longitude) of the bounding box.
+        df_coord (DataFrame): A DataFrame containing the NE, SW, and center coordinates of the images (result of Traffic Layer API).
+        traffic_api_result_path (str): Path to the directory containing traffic images fetched from the API.
+        num_point_sample (int, optional): The maximum number of sample points to take per street and direction group. Default is 10.
+        random_state (int, optional): Random seed for sampling to ensure reproducibility. Default is 42.
+
+    Returns:
+        DataFrame: A DataFrame containing precision and recall for each traffic color ('green', 'yellow', 'red', 'darkred').
+        Last row is total accuracy.
+    '''
+
+    # Load the predicted traffic data from the CSV file
     df_output = pd.read_csv(output_path)
     # print(df_output.shape)
 
+    # Filter the dataset to include points within the bounding box and exclude points with a 'blue' color
     df_output_filter = df_output[
         (df_output['x']>=se[0]) & (df_output['x']<=nw[0]) &
         (df_output['y']>=nw[1]) & (df_output['y']<=se[1]) &
@@ -356,20 +416,24 @@ def traffic_map_eval(output_path, nw, se, df_coord, traffic_api_result_path, num
     ][['street', 'x', 'y', 'direction', 'order', 'color']]
     # print(df_output_filter.shape)
 
+    # Sample a maximum of num_point_sample points per street and direction group
     df_output_sample = df_output_filter.groupby(['street' ,'direction']).apply(lambda x: x.sample(min(len(x), num_point_sample), random_state=random_state)).reset_index(drop=True)
     # print(df_output_sample.shape)
 
+    # For each sample point, determine the actual traffic color
     df_output_sample['color_actual'] = df_output_sample.apply(lambda row: get_traffic_color((row['x'], row['y']), df_coord, traffic_api_result_path, edge=20, plot=False), axis=1)
 
+    # Evaluate
     df_predict = df_output_sample['color'].value_counts().reset_index().rename(columns={'count': 'predict'})
     df_actual = df_output_sample['color_actual'].value_counts().reset_index().rename(columns={'count': 'actual', 'color_actual': 'color'})
     df_tp = df_output_sample[df_output_sample['color']==df_output_sample['color_actual']]['color'].value_counts().reset_index().rename(columns={'count': 'tp'})
 
     df_eval = df_predict.merge(df_actual, how='left', on='color').merge(df_tp, how='left', on='color')
     df_eval.loc[len(df_eval)] = ('total', df_eval['predict'].sum(), df_eval['actual'].sum(), df_eval['tp'].sum())
+    
     order = ['green', 'yellow', 'red', 'darkred', 'total']
     df_eval['color'] = pd.Categorical(df_eval['color'], categories=order, ordered=True)
-    df_eval = df_eval.sort_values(by='color')
+    df_eval = df_eval.sort_values(by='color').reset_index(drop=True)
 
     df_eval['precision'] = df_eval['tp']/df_eval['predict']*100
     df_eval['recall'] = df_eval['tp']/df_eval['actual']*100
