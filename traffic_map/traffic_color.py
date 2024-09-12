@@ -34,7 +34,7 @@ def get_df_speed(path):
 def get_df_coord(path):
     '''
     Read and process json files from Traffic Layer API,
-    containing North East (NE) and South West (SW) coordinates.
+    containing center, North East (NE) and South West (SW) coordinates.
     '''
     coord_list = []
     for f in glob.glob(f'{path}/*.json'):
