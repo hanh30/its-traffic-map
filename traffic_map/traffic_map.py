@@ -14,10 +14,6 @@ SOUTH = 20.94
 EAST = 105.93
 WEST = 105.73
 
-current_path = os.path.dirname(os.path.abspath(__file__))
-file_path = f'{current_path}/../db/traffic.xlsx'
-
-
 
 def read_data_vehicle(FILE_PATH_VEHICLE, DATE, TIME, duration=5):
     '''
@@ -380,7 +376,7 @@ if __name__ == '__main__':
 
     current_path = os.path.dirname(os.path.abspath(__file__))
     file_path = f'{current_path}/../db/traffic.xlsx'
-    FILE_PATH_VEHICLE = f'{current_path}/../db/test_data2.csv'
+    FILE_PATH_VEHICLE = f'{current_path}/../db/f_gps_vehicle_20240912164421.csv'
     FILE_PATH_STREET = f'{current_path}/../db/d_street_old.csv'
 
     weight=0.5
