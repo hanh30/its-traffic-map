@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import pandas as pd
+import time
 from datetime import datetime, timedelta
 from geopy.distance import geodesic
 from scipy.spatial import KDTree
@@ -363,6 +364,8 @@ def get_map_color(df_vehicle, df_street, window_size=10, weight=0.5):
 
 
 if __name__ == '__main__':
+    start = time.time()
+
     # Set variables
 
     # DATE = datetime.now().strftime('%Y-%m-%d')
@@ -377,7 +380,7 @@ if __name__ == '__main__':
     current_path = os.path.dirname(os.path.abspath(__file__))
     file_path = f'{current_path}/../db/traffic.xlsx'
     FILE_PATH_VEHICLE = f'{current_path}/../db/f_gps_vehicle_20240912164421.csv'
-    FILE_PATH_STREET = f'{current_path}/../db/d_street_old.csv'
+    FILE_PATH_STREET = f'{current_path}/../db/d_street.csv'
 
     weight=0.5
 
@@ -390,17 +393,9 @@ if __name__ == '__main__':
     df_street = pd.read_csv(FILE_PATH_STREET)
     # df_street.shape
 
-    #######################################
-    df_street_type = pd.read_excel(file_path, sheet_name='street')
-    df_street = df_street.merge(df_street_type, how='left', on='street')
-    df_street = df_street[df_street['order'].notnull() & (df_street['order'] != 'x')].reset_index(drop=True)
-    df_street['order'] = df_street['order'].astype(int)
-    # df_street.shape
-    #######################################
-
     # Combine vehicle data and street data, get traffic color
     df_street = insert_heading_col(df_street)
-    df_vehicle = find_closest_point(df_vehicle, df_street, angle_threshold=45, chunk_size=5000)
+    df_vehicle = find_closest_point(df_vehicle, df_street, angle_threshold=45, chunk_size=1000)
     df_street_color = get_map_color(df_vehicle, df_street, window_size=10, weight=weight)
 
     # print(f'df_street = {df_street.shape}')
@@ -411,3 +406,6 @@ if __name__ == '__main__':
     dt = datetime.now().strftime('%Y%m%d%H%M%S')
     output_path = f'{current_path}/../db/output_{dt}.csv'
     df_street_color.to_csv(output_path, index=False)
+
+    end = time.time()
+    print(f'Time taken = {end - start:.2f}s')
